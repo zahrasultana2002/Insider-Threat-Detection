@@ -1,6 +1,9 @@
 # %%
 import os
 import csv
+from collections import defaultdict
+from datetime import datetime, timedelta
+import pandas as pd
 
 
 # %%
@@ -24,11 +27,6 @@ def get_user_pc(logon_data):
 
 
 # %%
-from collections import defaultdict
-from datetime import datetime, timedelta
-import pandas as pd
-
-
 def get_num_other_PC_per_week(user, user_pc, logon_data):
     weekly_pc_counts = defaultdict(set)  # Dictionary to store unique PCs per week
     all_weeks = set()  # Set to track all weeks where logons occurred
@@ -71,11 +69,86 @@ def get_num_other_PC_per_week(user, user_pc, logon_data):
 
 
 # %%
-logon_data = get_user_logon_data(
-    "ACM1770", os.path.join("Insider threat dataset", "r5.2")
-)
-user_pc = get_user_pc(logon_data)
-num_other_pc = get_num_other_PC_per_week("ACM1770", user_pc, logon_data)
+def find_insider_answers_file(user, insider_root):
+    """
+    Recursively searches for the insider CSV file for the given user in the `insider_root` directory.
+
+    :param user: The user ID (e.g., "CWW1120")
+    :param insider_root: The root folder containing multiple r5.2-* subfolders.
+    :return: The full path to the user's insider CSV file if found, else None.
+    """
+    for root, _, files in os.walk(insider_root):
+        for file in files:
+            if file.startswith(f"r5.2-") and file.endswith(
+                f"-{user}.csv"
+            ):  # Match user file format
+                return os.path.join(root, file)  # Return full file path if found
+    return None  # Return None if no file is found
+
+
+def extract_weeks_from_csv(file_path):
+    """
+    Reads a CSV file using `csv.reader` and extracts unique weeks from the timestamps (3rd column).
+
+    :param file_path: Path to the insider CSV file.
+    :return: A set of detected `Year-Week` values.
+    """
+    insider_weeks = set()
+
+    try:
+        with open(file_path, mode="r", newline="", encoding="utf-8") as file:
+            reader = csv.reader(file)
+            for row in reader:
+                if len(row) < 3:  # Ensure the timestamp column exists
+                    continue
+                try:
+                    logon_time = datetime.strptime(
+                        row[2], "%m/%d/%Y %H:%M:%S"
+                    )  # Parse timestamp
+                    week = logon_time.strftime("%Y-%W")  # Convert to Year-Week format
+                    insider_weeks.add(week)
+                except ValueError:
+                    continue  # Skip rows with invalid timestamps
+    except Exception as e:
+        print(f"Error reading {file_path}: {e}")
+
+    return insider_weeks
+
+
+def label_insider_weeks(df, user, insider_root):
+    """
+    Adds an 'insider' column to the DataFrame by checking if the user's week exists in their insider file.
+
+    :param df: DataFrame containing ['user', 'week', 'num_other_pc']
+    :param user: The user ID for whom the dataframe is filtered.
+    :param insider_root: Path to the folder containing multiple r5.2-* subfolders.
+    :return: DataFrame with an 'insider' column.
+    """
+
+    # Locate the user's insider file
+    insider_file = find_insider_answers_file(user, insider_root)
+
+    # If no insider file exists for the user, mark all weeks as 0 (not insider)
+    if not insider_file:
+        df["insider"] = 0
+        return df
+
+    # Extract weeks from the insider CSV file
+    insider_weeks = extract_weeks_from_csv(insider_file)
+
+    # Label insider weeks in the user's dataframe
+    df["insider"] = df["week"].apply(lambda w: 1 if w in insider_weeks else 0)
+
+    return df
+
 
 # %%
-print(num_other_pc)
+user = "ACM1770"
+
+logon_data = get_user_logon_data(user, os.path.join("Insider threat dataset", "r5.2"))
+user_pc = get_user_pc(logon_data)
+num_other_pc = get_num_other_PC_per_week(user, user_pc, logon_data)
+labeled_df = label_insider_weeks(
+    num_other_pc, user, os.path.join("Insider threat dataset", "answers")
+)
+print(labeled_df)
