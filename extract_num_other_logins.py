@@ -2,7 +2,7 @@
 import os
 import csv
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import pandas as pd
 
 
@@ -66,6 +66,81 @@ def get_num_other_PC_per_week(user, user_pc, logon_data):
     # Convert to DataFrame
     output_list = [[user, week, count] for week, count in sorted(weekly_counts.items())]
     return pd.DataFrame(output_list, columns=["user", "week", "num_other_pc"])
+
+
+def get_after_hours_logons(
+    logon_data, user, business_start=time(9, 0, 0), business_end=time(17, 0, 0)
+):
+    """
+    Aggregates after-hours logons per week for a specified user.
+
+    :param logon_data: List of logon events in the format [id, date, user, pc, activity]
+    :param user: The specific user to filter logon events for.
+    :param business_start: Datetime.time representing start of business hours.
+    :param business_end: Datetime.time representing end of business hours.
+    :return: DataFrame with ['user', 'week', 'after_hours_logons']
+    """
+
+    after_hours_counts = defaultdict(int)
+
+    # Track all weeks for the user
+    all_weeks = set()
+
+    for row in logon_data:
+        logon_id, timestamp, logon_user, pc, activity = row  # Unpack columns
+
+        if (
+            activity.lower() == "logon" and logon_user == user
+        ):  # Only process logons for the specified user
+            try:
+                logon_time = datetime.strptime(timestamp, "%m/%d/%Y %H:%M:%S")
+                logon_week = logon_time.strftime("%Y-%W")  # Ensure same format
+
+                # Store this week to ensure it's included in results
+                all_weeks.add(logon_week)
+
+                # Extract only the time component
+                logon_hour = logon_time.time()
+
+                # Check if the logon occurred outside business hours
+                if logon_hour < business_start or logon_hour >= business_end:
+                    after_hours_counts[logon_week] += 1
+
+            except ValueError:
+                continue  # Skip invalid timestamps
+
+    # Ensure all weeks in range are included (like `get_num_other_PC_per_week`)
+    if all_weeks:
+        min_week = min(all_weeks)
+        max_week = max(all_weeks)
+
+        # Generate all weeks in range
+        start_date = datetime.strptime(min_week + "-1", "%Y-%W-%w")
+        end_date = datetime.strptime(max_week + "-1", "%Y-%W-%w")
+
+        current_date = start_date
+        complete_weeks = set()
+
+        while current_date <= end_date:
+            week_str = current_date.strftime("%Y-%W")
+            complete_weeks.add(week_str)
+            current_date += timedelta(days=7)
+
+        # Fill in missing weeks with 0
+        after_hours_counts = {
+            week: after_hours_counts.get(week, 0) for week in complete_weeks
+        }
+
+    # Convert to DataFrame
+    result_data = [
+        (user, week, after_hours_counts[week])
+        for week in sorted(after_hours_counts.keys())
+    ]
+    after_hours_df = pd.DataFrame(
+        result_data, columns=["user", "week", "after_hours_logons"]
+    )
+
+    return after_hours_df
 
 
 # %%
@@ -143,12 +218,14 @@ def label_insider_weeks(df, user, insider_root):
 
 
 # %%
-user = "ACM1770"
+user = "JBI1134"
 
 logon_data = get_user_logon_data(user, os.path.join("Insider threat dataset", "r5.2"))
 user_pc = get_user_pc(logon_data)
 num_other_pc = get_num_other_PC_per_week(user, user_pc, logon_data)
+after_hours_logons = get_after_hours_logons(logon_data, user)
 labeled_df = label_insider_weeks(
-    num_other_pc, user, os.path.join("Insider threat dataset", "answers")
+    after_hours_logons, user, os.path.join("Insider threat dataset", "answers")
 )
-print(labeled_df)
+print(labeled_df[labeled_df])
+print(after_hours_logons)
